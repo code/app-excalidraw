@@ -25,6 +25,7 @@ import type {
   OrderedExcalidrawElement,
   ExcalidrawElbowArrowElement,
   FixedPoint,
+  SceneElementsMap,
 } from "./types";
 
 import type { Bounds } from "./bounds";
@@ -124,7 +125,6 @@ export const bindOrUnbindLinearElement = (
     boundToElementIds,
     unboundFromElementIds,
     elementsMap,
-    scene,
   );
   bindOrUnbindLinearElementEdge(
     linearElement,
@@ -134,7 +134,6 @@ export const bindOrUnbindLinearElement = (
     boundToElementIds,
     unboundFromElementIds,
     elementsMap,
-    scene,
   );
 
   const onlyUnbound = Array.from(unboundFromElementIds).filter(
@@ -161,7 +160,6 @@ const bindOrUnbindLinearElementEdge = (
   // Is mutated
   unboundFromElementIds: Set<ExcalidrawBindableElement["id"]>,
   elementsMap: NonDeletedSceneElementsMap,
-  scene: Scene,
 ): void => {
   // "keep" is for method chaining convenience, a "no-op", so just bail out
   if (bindableElement === "keep") {
@@ -571,8 +569,7 @@ const calculateFocusAndGap = (
 // in explicitly.
 export const updateBoundElements = (
   changedElement: NonDeletedExcalidrawElement,
-  elementsMap: ElementsMap,
-  scene: Scene,
+  elementsMap: NonDeletedSceneElementsMap | SceneElementsMap,
   options?: {
     simultaneouslyUpdated?: readonly ExcalidrawElement[];
     oldSize?: { width: number; height: number };
@@ -658,7 +655,7 @@ export const updateBoundElements = (
     LinearElementEditor.movePoints(
       element,
       updates,
-      scene,
+      elementsMap,
       {
         ...(changedElement.id === element.startBinding?.elementId
           ? { startBinding: bindings.startBinding }
@@ -762,6 +759,11 @@ export const bindPointToSnapToElementOutline = (
         [point[0], point[1] + 2 * bindableElement.height],
         FIXED_BINDING_DISTANCE,
         elementsMap,
+      ).map((i) =>
+        distanceToBindableElement(bindableElement, i, elementsMap) >=
+        bindableElement.height / 2
+          ? ([point[0], -1 * i[1]] as Point)
+          : ([point[0], i[1]] as Point),
       ),
       ...intersectElementWithLine(
         bindableElement,
@@ -769,13 +771,13 @@ export const bindPointToSnapToElementOutline = (
         [point[0] + 2 * bindableElement.width, point[1]],
         FIXED_BINDING_DISTANCE,
         elementsMap,
+      ).map((i) =>
+        distanceToBindableElement(bindableElement, i, elementsMap) >=
+        bindableElement.width / 2
+          ? ([-1 * i[0], point[1]] as Point)
+          : ([i[0], point[1]] as Point),
       ),
-    ].map((i) =>
-      distanceToBindableElement(bindableElement, i, elementsMap) >
-      Math.min(bindableElement.width, bindableElement.height) / 2
-        ? ([-1 * i[0], -1 * i[1]] as Point)
-        : i,
-    );
+    ];
 
     const heading = headingForPointFromElement(bindableElement, aabb, point);
     const isVertical =
@@ -1003,7 +1005,7 @@ const updateBoundPoint = (
 
   if (isElbowArrow(linearElement)) {
     const fixedPoint =
-      binding.fixedPoint ??
+      normalizeFixedPoint(binding.fixedPoint) ??
       calculateFixedPointForElbowArrowBinding(
         linearElement,
         bindableElement,
@@ -1116,12 +1118,12 @@ export const calculateFixedPointForElbowArrowBinding = (
   ) as Point;
 
   return {
-    fixedPoint: [
+    fixedPoint: normalizeFixedPoint([
       (nonRotatedSnappedGlobalPoint[0] - hoveredElement.x) /
         hoveredElement.width,
       (nonRotatedSnappedGlobalPoint[1] - hoveredElement.y) /
         hoveredElement.height,
-    ] as [number, number],
+    ]),
   };
 };
 
@@ -2174,7 +2176,8 @@ export const getGlobalFixedPointForBindableElement = (
   fixedPointRatio: [number, number],
   element: ExcalidrawBindableElement,
 ) => {
-  const [fixedX, fixedY] = fixedPointRatio;
+  const [fixedX, fixedY] = normalizeFixedPoint(fixedPointRatio);
+
   return rotatePoint(
     [element.x + element.width * fixedX, element.y + element.height * fixedY],
     getCenterForElement(element),
@@ -2227,4 +2230,17 @@ export const getArrowLocalFixedPoints = (
     LinearElementEditor.pointFromAbsoluteCoords(arrow, startPoint, elementsMap),
     LinearElementEditor.pointFromAbsoluteCoords(arrow, endPoint, elementsMap),
   ];
+};
+
+export const normalizeFixedPoint = <T extends FixedPoint | null>(
+  fixedPoint: T,
+): T extends null ? null : FixedPoint => {
+  // Do not allow a precise 0.5 for fixed point ratio
+  // to avoid jumping arrow heading due to floating point imprecision
+  if (fixedPoint && (fixedPoint[0] === 0.5 || fixedPoint[1] === 0.5)) {
+    return fixedPoint.map((ratio) =>
+      ratio === 0.5 ? 0.5001 : ratio,
+    ) as T extends null ? null : FixedPoint;
+  }
+  return fixedPoint as any as T extends null ? null : FixedPoint;
 };
